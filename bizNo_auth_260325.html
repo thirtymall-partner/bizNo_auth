@@ -201,6 +201,8 @@
 
   <script>
     const GITBOOK_BASE_URL = "https://thirtymall.gitbook.io/main/";
+    const AUTH_STORAGE_KEY = "thirtymall_partner_auth";
+    const AUTH_EXPIRE_HOURS = 24;
 
     const blockedNumbers = new Set([
       "0000000000",
@@ -226,20 +228,48 @@
       const rawPath = (params.get("path") || "").trim();
 
       if (!rawPath) return null;
-
-      // 전체 URL 전달 차단
       if (rawPath.includes("http://") || rawPath.includes("https://")) return null;
-
-      // 경로 역참조 차단
       if (rawPath.includes("..")) return null;
 
-      // 앞 슬래시 제거
       const cleaned = rawPath.replace(/^\/+/, "");
 
-      // 허용 문자만 통과
       if (!/^[a-zA-Z0-9/_-]+$/.test(cleaned)) return null;
 
       return cleaned;
+    }
+
+    function getAllowedTargetUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const rawTarget = (params.get("target") || "").trim();
+
+      if (!rawTarget) return null;
+
+      try {
+        const url = new URL(rawTarget);
+
+        const isAllowedGoogleDriveFile =
+          url.protocol === "https:" &&
+          url.hostname === "drive.google.com" &&
+          /^\/file\/d\/[^/]+\/view$/.test(url.pathname);
+
+        if (isAllowedGoogleDriveFile) {
+          return url.toString();
+        }
+
+        return null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function getRedirectUrl() {
+      const targetUrl = getAllowedTargetUrl();
+      if (targetUrl) return targetUrl;
+
+      const path = getGuidePath();
+      if (path) return GITBOOK_BASE_URL + path;
+
+      return null;
     }
 
     function normalizeBizNo(value) {
@@ -290,9 +320,9 @@
       messageEl.className = "message " + (type || "");
     }
 
-    function setLoading(isLoading) {
+    function setLoading(isLoading, loadingText) {
       submitBtn.disabled = isLoading;
-      submitBtn.textContent = isLoading ? "확인 중..." : "사업자번호 인증";
+      submitBtn.textContent = isLoading ? (loadingText || "확인 중...") : "사업자번호 인증";
 
       if (isLoading) {
         submitBtn.classList.add("loading-dot");
@@ -301,10 +331,72 @@
       }
     }
 
+    function formatDateTime(date) {
+      const yyyy = date.getFullYear();
+      const mm = String(date.getMonth() + 1).padStart(2, "0");
+      const dd = String(date.getDate()).padStart(2, "0");
+      const hh = String(date.getHours()).padStart(2, "0");
+      const mi = String(date.getMinutes()).padStart(2, "0");
+
+      return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+    }
+
+    function saveAuthState() {
+      const now = Date.now();
+      const expiresAt = now + AUTH_EXPIRE_HOURS * 60 * 60 * 1000;
+
+      localStorage.setItem(
+        AUTH_STORAGE_KEY,
+        JSON.stringify({
+          verified: true,
+          verifiedAt: now,
+          expiresAt: expiresAt
+        })
+      );
+    }
+
+    function getAuthState() {
+      try {
+        const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+        if (!raw) return null;
+
+        const data = JSON.parse(raw);
+        if (!data || !data.verified || !data.expiresAt || !data.verifiedAt) {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          return null;
+        }
+
+        if (Date.now() > data.expiresAt) {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          return null;
+        }
+
+        return data;
+      } catch (e) {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        return null;
+      }
+    }
+
+    function autoRedirectIfAuthorized() {
+      const redirectUrl = getRedirectUrl();
+      const auth = getAuthState();
+
+      if (!redirectUrl || !auth) return;
+
+      const verifiedText = formatDateTime(new Date(auth.verifiedAt));
+      showMessage(`${verifiedText} 인증 확인 ... 가이드로 이동합니다.`, "success");
+      setLoading(true, "확인 중...");
+
+      setTimeout(() => {
+        window.location.href = redirectUrl;
+      }, 700);
+    }
+
     function moveToGuide() {
       const raw = bizInput.value;
       const bizNo = normalizeBizNo(raw);
-      const path = getGuidePath();
+      const redirectUrl = getRedirectUrl();
 
       showMessage("", "");
 
@@ -332,16 +424,19 @@
         return;
       }
 
-      if (!path) {
+      if (!redirectUrl) {
         showMessage("오류 발생. 관리자에게 문의해주세요. 30mall.assist@gmail.com", "error");
         return;
       }
 
-      setLoading(true);
-      showMessage("사업자 인증 성공.", "success");
+      saveAuthState();
+
+      const verifiedText = formatDateTime(new Date());
+      setLoading(true, "확인 중...");
+      showMessage(`${verifiedText} 인증 확인 ... 가이드로 이동합니다.`, "success");
 
       setTimeout(() => {
-        window.location.href = GITBOOK_BASE_URL + path;
+        window.location.href = redirectUrl;
       }, 700);
     }
 
@@ -356,6 +451,8 @@
     });
 
     submitBtn.addEventListener("click", moveToGuide);
+
+    autoRedirectIfAuthorized();
   </script>
 </body>
 </html>
